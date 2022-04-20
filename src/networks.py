@@ -9,9 +9,9 @@ def weights_init(module):
         module.bias.data.fill_(0.01)
 
 
-class Actor(nn.Module):
+class Actor_continuous(nn.Module):
     def __init__(self, env, observation_dim, action_dim, hidden_dim):
-        super(Actor, self).__init__()
+        super(Actor_continuous, self).__init__()
         self.mlp = MLP(observation_dim, hidden_dim[-1], hidden_dim)
         self.mean_layer = nn.Linear(hidden_dim[-1], action_dim)
         self.log_std_layer = nn.Linear(hidden_dim[-1], action_dim)
@@ -35,14 +35,6 @@ class Actor(nn.Module):
     def sample(self, obs):
         mean, log_std = self.forward(obs)
         std = log_std.exp()
-
-        # # Reparameterization trick (OpenAi spinning up ver.) 
-        # normal = Normal(torch.zeros_like(mean), torch.ones_like(std))
-        # z = normal.sample()
-        # action = torch.tanh(mean + std * z)
-        # # tanh -> (-1, 1) -> log 0.000000000001 can be possible -> + 1e-7
-        # log_prob = Normal(mean, std).log_prob(action) - torch.log(1 - action.pow(2) + 1e-7)
-
         normal = Normal(mean, std)
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
         y_t = torch.tanh(x_t)
@@ -53,6 +45,28 @@ class Actor(nn.Module):
         log_prob = log_prob.sum(1, keepdim=True)
         return action, log_prob
 
+class Actor_discrete(nn.Module):
+    def __init__(self, env, observation_dim, action_dim, hidden_dim):
+        super(Actor_discrete, self).__init__()
+        self.mlp = MLP(observation_dim, hidden_dim[-1], hidden_dim)
+        self.mean_layer = nn.Linear(hidden_dim[-1], action_dim)
+        self.noise = torch.Tensor(action_dim)
+
+        self.apply(weights_init)
+
+    def forward(self, obs):
+        out = F.relu(self.mlp(obs))
+        out = self.mean_layer(out)
+        mean = torch.tanh(out)
+        return mean
+
+    def sample(self, obs):
+        mean = self.forward(obs)
+        noise = self.noise.normal_(0., std=0.1)
+        noise = noise.clamp(-0.25, 0.25)
+        action = mean + noise
+        return action, torch.tensor(0.)
+
 
 class Critic(nn.Module): # we need 4 critics (Q1, Q2, Q1_target, Q2_target)
     def __init__(self, observation_dim, action_dim, hidden_dim):
@@ -62,6 +76,8 @@ class Critic(nn.Module): # we need 4 critics (Q1, Q2, Q1_target, Q2_target)
         self.apply(weights_init)
     
     def forward(self, obs, action):
+        if len(action.shape) == 1:
+            action = action.view(-1, 1)
         out = torch.cat([obs, action], dim=1)
         return self.mlp(out)
 

@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import Adam
 import numpy as np
-from .networks import Actor, Critic
+from .networks import Actor_continuous, Actor_discrete,Critic
 
 
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
@@ -31,32 +31,37 @@ class SAC:
         super().__init__()
         self.env = env
         self.args = args
-        self.observation_dim = env.observation_space.shape[0]
-        self.action_dim = env.action_space.shape[0]
         self.alpha = self.args.alpha
+        observation_dim = env.observation_space.shape[0]
 
+        # Actor
+        if self.args.continuous_space:
+            action_dim = env.action_space.shape[0]
+            self.actor = Actor_continuous(env, observation_dim, action_dim, args.hidden_dim)
+        else:
+            action_dim = 1
+            self.actor = Actor_discrete(env, observation_dim, action_dim, args.hidden_dim)
+        self.actor_optimizer = Adam(self.actor.parameters(), lr=args.lr)
+        
         # Q1, Q2, Q1_target, Q2_target
-        self.critic1 = Critic(self.observation_dim, self.action_dim, args.hidden_dim)
-        self.critic2 = Critic(self.observation_dim, self.action_dim, args.hidden_dim)
-        self.critic1_target = Critic(self.observation_dim, self.action_dim, args.hidden_dim)
-        self.critic2_target = Critic(self.observation_dim, self.action_dim, args.hidden_dim)
+        self.critic1 = Critic(observation_dim, action_dim, args.hidden_dim)
+        self.critic2 = Critic(observation_dim, action_dim, args.hidden_dim)
+        self.critic1_target = Critic(observation_dim, action_dim, args.hidden_dim)
+        self.critic2_target = Critic(observation_dim, action_dim, args.hidden_dim)
 
         self.critic1_optimizer = Adam(self.critic1.parameters(), lr=args.lr)
         self.critic2_optimizer = Adam(self.critic2.parameters(), lr=args.lr)
         self.critic1_target_optimizer = Adam(self.critic1_target.parameters(), lr=args.lr)
         self.critic2_target_optimizer = Adam(self.critic2_target.parameters(), lr=args.lr)
 
-        # Actor (continuous action space only now)
-        self.actor = Actor(self.env, self.observation_dim, self.action_dim, args.hidden_dim)
-        self.actor_optimizer = Adam(self.actor.parameters(), lr=args.lr)
-
         # Alpha
-        self.target_entropy = -torch.prod(torch.Tensor(self.env.action_space.shape)).item()
+        self.target_entropy = -torch.prod(torch.Tensor(env.action_space.shape)).item()
         self.log_alpha = torch.zeros(1, requires_grad=True)
         self.alpha_optimizer = Adam([self.log_alpha], lr=args.lr)
 
         self.logger = {
             'total_timesteps' : [],
+            'episode' : [],
             'episode_reward' : [],
             'critic_loss' : [],
             'actor_loss' : [],
@@ -81,7 +86,8 @@ class SAC:
             done = False
             state = self.env.reset()
 
-            while not done:
+            # while not done:
+            while True:
                 if self.args.render and i_episode % self.args.render_period == 0:
                     self.env.render()
 
@@ -99,8 +105,16 @@ class SAC:
                 episode_reward += reward
                 episode_steps += 1
                 state = next_state
+                
+                if done:
+                    state = self.env.reset()
+                    
+                if episode_steps > self.args.max_episode_len:
+                    done = True
+                    break
 
             self.logger['total_timesteps'].append(total_timesteps)
+            self.logger['episode'].append(i_episode + 1)
             self.logger['episode_reward'].append(episode_reward)
 
             if i_episode != 0 and i_episode % self.args.logging_period == 0:
@@ -170,7 +184,8 @@ class SAC:
         self.logger['q_target'].append(torch.sum(q_target)/len(q_target))
         self.logger['q1'].append(torch.sum(q1)/len(q1))
         self.logger['q2'].append(torch.sum(q2)/len(q2))
-        self.logger['log_prob'].append(torch.sum(log_prob_from_current)/len(log_prob_from_current))
+        if self.args.continuous_space:
+            self.logger['log_prob'].append(torch.sum(log_prob_from_current)/len(log_prob_from_current))
 
         # target_update : soft_target -> 1, hard_target -> 1000
         if gradient_steps % self.args.target_update == 0:
@@ -189,21 +204,26 @@ class SAC:
     def get_action(self, state):
         state = torch.tensor(state, dtype=torch.float).unsqueeze(0)
         action, _ = self.actor.sample(state)
-        return action.detach().cpu().numpy()[0]
+        if self.args.continuous_space:
+            return action.detach().cpu().numpy()[0]
+        else:
+            return torch.argmax(action).detach().cpu().numpy()
 
     def logging(self):
         total_timesteps = self.logger['total_timesteps'][0]
+        episode = self.logger['episode'][0]
         episode_reward = self.logger['episode_reward'][0]
-        avg_critic_loss = sum(self.logger['critic_loss']) / len(self.logger['critic_loss'])
-        avg_actor_loss = sum(self.logger['actor_loss']) / len(self.logger['actor_loss'])
-        avg_alpha_loss = sum(self.logger['alpha_loss']) / len(self.logger['alpha_loss'])
-        avg_q_target = sum(self.logger['q_target']) / len(self.logger['q_target'])
-        avg_q1 = sum(self.logger['q1']) / len(self.logger['q1'])
-        avg_q2 = sum(self.logger['q2']) / len(self.logger['q2'])
-        avg_log_prob = sum(self.logger['log_prob']) / len(self.logger['log_prob'])
+        avg_critic_loss = sum(self.logger['critic_loss']) / (len(self.logger['critic_loss']) + 1e-7)
+        avg_actor_loss = sum(self.logger['actor_loss']) / (len(self.logger['actor_loss']) + 1e-7)
+        avg_alpha_loss = sum(self.logger['alpha_loss']) / (len(self.logger['alpha_loss']) + 1e-7)
+        avg_q_target = sum(self.logger['q_target']) / (len(self.logger['q_target']) + 1e-7)
+        avg_q1 = sum(self.logger['q1']) / (len(self.logger['q1']) + 1e-7)
+        avg_q2 = sum(self.logger['q2']) / (len(self.logger['q2']) + 1e-7)
+        avg_log_prob = sum(self.logger['log_prob']) / (len(self.logger['log_prob']) + 1e-7)
         
         print('#'*50)
         print(f"Total timesteps : {total_timesteps}")
+        print(f"Episode : {episode}")
         print(f"Episode reward : {episode_reward}")
         print(f"Critic loss : {avg_critic_loss}")
         print(f"Actor loss : {avg_actor_loss}")

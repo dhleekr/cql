@@ -19,7 +19,9 @@ parser.add_argument('--env', dest='env', default='Pendulum-v1', type=str)
 parser.add_argument('--render', dest='render', default=False, type=bool)
 parser.add_argument('--render_period', dest='render_period', default='50', type=int)
 parser.add_argument('--logging_period', dest='logging_period', default='1', type=int)
+parser.add_argument('--max_episode_len', dest='max_episode_len', default='1000', type=int)
 parser.add_argument('--hard_target', dest='hard_target', default=False, type=bool)
+parser.add_argument('--continuous_space', dest='continuous_space', default=True, type=bool)
 
 args = parser.parse_args()
 
@@ -30,5 +32,7 @@ else:
     print("Soft target updating!!!!!!")
 
 env = gym.make(args.env)
+if isinstance(env.action_space, gym.spaces.discrete.Discrete):
+    args.continuous_space = False
 agent = SAC(env, args)
 agent.train()

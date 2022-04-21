@@ -86,8 +86,7 @@ class SAC:
             done = False
             state = self.env.reset()
 
-            # while not done:
-            while True:
+            while not done:
                 if self.args.render and i_episode % self.args.render_period == 0:
                     self.env.render()
 
@@ -105,11 +104,8 @@ class SAC:
                 episode_reward += reward
                 episode_steps += 1
                 state = next_state
-                
-                if done:
-                    state = self.env.reset()
                     
-                if episode_steps > self.args.max_episode_len:
+                if episode_steps >= self.args.max_episode_len:
                     done = True
                     break
 
@@ -117,7 +113,16 @@ class SAC:
             self.logger['episode'].append(i_episode + 1)
             self.logger['episode_reward'].append(episode_reward)
 
-            if i_episode != 0 and i_episode % self.args.logging_period == 0:
+            if i_episode % self.args.save_freq == 0:
+                print("New model saved!!!!!!!!!!!!")
+                torch.save(self.critic1.state_dict(), f'./models/critic1_{self.args.env}.pt')
+                torch.save(self.critic2.state_dict(), f'./models/critic2_{self.args.env}.pt')
+                torch.save(self.critic1_target.state_dict(), f'./models/critic1_target_{self.args.env}.pt')
+                torch.save(self.critic2_target.state_dict(), f'./models/critic2_target_{self.args.env}.pt')
+                torch.save(self.actor.state_dict(), f'./models/actor_{self.args.env}.pt')
+                torch.save(self.alpha, f'./models/alpha_{self.args.env}.pt')
+
+            if i_episode % self.args.logging_period == 0:
                 self.logging()
             
             if total_timesteps > self.args.timesteps:
@@ -237,3 +242,37 @@ class SAC:
 
         for k in self.logger.keys():
             self.logger[k] = []
+
+    def test(self):        
+        self.critic1.load_state_dict(torch.load(f"{self.args.models_path}/critic1_{self.args.env}.pt"))
+        self.critic2.load_state_dict(torch.load(f"{self.args.models_path}/critic2_{self.args.env}.pt"))
+        self.critic1_target.load_state_dict(torch.load(f"{self.args.models_path}/critic1_target_{self.args.env}.pt"))
+        self.critic2_target.load_state_dict(torch.load(f"{self.args.models_path}/critic2_target_{self.args.env}.pt"))
+        self.actor.load_state_dict(torch.load(f"{self.args.models_path}/actor_{self.args.env}.pt"))
+        self.alpha = torch.load(f"{self.args.models_path}/alpha_{self.args.env}.pt")
+
+
+        for _ in range(10):
+            done = False
+            state = self.env.reset()
+            episode_steps = 0
+            episode_reward = 0
+
+            while not done:
+                self.env.render()
+                action = self.get_action(state)
+                next_state, reward, done, _ = self.env.step(action)
+                
+                episode_reward += reward
+                episode_steps += 1
+                state = next_state
+                    
+                if episode_steps >= self.args.max_episode_len:
+                    done = True
+                    break
+
+            print('#'*50)
+            print(f"Epdisode steps : {episode_steps}")
+            print(f"Epdisode reward : {episode_reward}")
+            print('#'*50)
+            print('\n')

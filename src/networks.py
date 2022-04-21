@@ -44,6 +44,7 @@ class Actor_continuous(nn.Module):
         log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-7)
         log_prob = log_prob.sum(1, keepdim=True)
         return action, log_prob
+        
 
 class Actor_discrete(nn.Module):
     def __init__(self, env, observation_dim, action_dim, hidden_dim):

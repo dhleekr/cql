@@ -17,11 +17,14 @@ parser.add_argument('--target_update', dest='target_update', default=1, type=int
 parser.add_argument('--updates', dest='updates', default=1, type=int)
 parser.add_argument('--env', dest='env', default='Pendulum-v1', type=str)
 parser.add_argument('--render', dest='render', default=False, type=bool)
-parser.add_argument('--render_period', dest='render_period', default='50', type=int)
-parser.add_argument('--logging_period', dest='logging_period', default='1', type=int)
-parser.add_argument('--max_episode_len', dest='max_episode_len', default='1000', type=int)
+parser.add_argument('--render_period', dest='render_period', default=50, type=int)
+parser.add_argument('--logging_period', dest='logging_period', default=1, type=int)
+parser.add_argument('--max_episode_len', dest='max_episode_len', default=2000, type=int)
 parser.add_argument('--hard_target', dest='hard_target', default=False, type=bool)
 parser.add_argument('--continuous_space', dest='continuous_space', default=True, type=bool)
+parser.add_argument('--save_freq', dest='save_freq', default=10, type=int)
+parser.add_argument('--models_path', dest='models_path', default='./models', type=str)
+parser.add_argument('--test', dest='test', default=False, type=bool)
 
 args = parser.parse_args()
 
@@ -32,7 +35,13 @@ else:
     print("Soft target updating!!!!!!")
 
 env = gym.make(args.env)
+
 if isinstance(env.action_space, gym.spaces.discrete.Discrete):
     args.continuous_space = False
+
 agent = SAC(env, args)
-agent.train()
+
+if not args.test:
+    agent.train()
+else:
+    agent.test()

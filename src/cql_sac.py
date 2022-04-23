@@ -8,6 +8,7 @@ from .networks import Actor_continuous, Actor_discrete,Critic
 
 
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 
 class ReplayBuffer:
     def __init__(self, buffer_size=1e6):
@@ -40,17 +41,17 @@ class CQL_sac:
         # Actor
         if self.args.continuous_space:
             action_dim = env.action_space.shape[0]
-            self.actor = Actor_continuous(env, observation_dim, action_dim, args.hidden_dim)
+            self.actor = Actor_continuous(env, observation_dim, action_dim, args.hidden_dim).to(device)
         else:
             action_dim = 1
-            self.actor = Actor_discrete(env, observation_dim, action_dim, args.hidden_dim)
+            self.actor = Actor_discrete(env, observation_dim, action_dim, args.hidden_dim).to(device)
         self.actor_optimizer = Adam(self.actor.parameters(), lr=3e-5)
         
         # Q1, Q2, Q1_target, Q2_target
-        self.critic1 = Critic(observation_dim, action_dim, args.hidden_dim)
-        self.critic2 = Critic(observation_dim, action_dim, args.hidden_dim)
-        self.critic1_target = Critic(observation_dim, action_dim, args.hidden_dim)
-        self.critic2_target = Critic(observation_dim, action_dim, args.hidden_dim)
+        self.critic1 = Critic(observation_dim, action_dim, args.hidden_dim).to(device)
+        self.critic2 = Critic(observation_dim, action_dim, args.hidden_dim).to(device)
+        self.critic1_target = Critic(observation_dim, action_dim, args.hidden_dim).to(device)
+        self.critic2_target = Critic(observation_dim, action_dim, args.hidden_dim).to(device)
 
         self.critic1_optimizer = Adam(self.critic1.parameters(), lr=args.lr)
         self.critic2_optimizer = Adam(self.critic2.parameters(), lr=args.lr)
@@ -110,7 +111,7 @@ class CQL_sac:
                 torch.save(self.critic2_target.state_dict(), f'./models/critic2_target_{self.args.env}.pt')
                 torch.save(self.actor.state_dict(), f'./models/actor_{self.args.env}.pt')
                 torch.save(self.alpha, f'./models/alpha_{self.args.env}.pt')
-                torch.save(self.cql_alpha, f'./models/cql_alpha{self.args.env}.pt')
+                torch.save(self.cql_alpha, f'./models/cql_alpha_{self.args.env}.pt')
             
             if total_timesteps % self.args.logging_freq == 0:
                 self.logging()
@@ -126,12 +127,12 @@ class CQL_sac:
                
     def update(self, batch, gradient_steps):
         state, action, reward, next_state, done = batch
-        state = torch.tensor(state, dtype=torch.float)
-        action = torch.tensor(action, dtype=torch.float)
-        reward = torch.tensor(reward, dtype=torch.float).unsqueeze(1)
+        state = torch.tensor(state, dtype=torch.float).to(device)
+        action = torch.tensor(action, dtype=torch.float).to(device)
+        reward = torch.tensor(reward, dtype=torch.float).unsqueeze(1).to(device)
         reward = (reward - reward.mean()) / (reward.std() + 1e-7)
-        next_state = torch.tensor(next_state, dtype=torch.float)
-        done = torch.tensor(done, dtype=torch.float).unsqueeze(1)
+        next_state = torch.tensor(next_state, dtype=torch.float).to(device)
+        done = torch.tensor(done, dtype=torch.float).unsqueeze(1).to(device)
 
         """
         Compute critic loss : std_bellman_error_loss, cql_loss(-cql_alpha_loss)
@@ -142,7 +143,7 @@ class CQL_sac:
             next_action, next_log_prob = self.actor.sample(next_state)
             q1_target = self.critic1_target(next_state, next_action)
             q2_target = self.critic2_target(next_state, next_action)
-            q_target = reward + (1 - done) * self.args.gamma * (torch.min(q1_target, q2_target) - self.alpha * next_log_prob)
+            q_target = reward + (1 - done) * self.args.gamma * (torch.min(q1_target, q2_target).to(device) - self.alpha * next_log_prob)
 
         q1 = self.critic1(state, action)
         q2 = self.critic2(state, action)
@@ -153,13 +154,13 @@ class CQL_sac:
         std_bellman_error_loss = q1_loss + q2_loss
 
         # Compute CQL loss
-        random_sampled_actions = torch.tensor([])
+        random_sampled_actions = torch.tensor([]).to(device)
         for i in range(action.shape[-1]):
             temp = torch.FloatTensor(state.shape[0] * self.num_samples, 1).uniform_(self.env.action_space.low[i], self.env.action_space.high[i])
-            random_sampled_actions = torch.cat((random_sampled_actions, temp), dim=1)
+            random_sampled_actions = torch.cat((random_sampled_actions.to(device), temp.to(device)), dim=1)
 
-        repeated_states = state.repeat(self.num_samples, 1)
-        repeated_next_states = next_state.repeat(self.num_samples, 1)
+        repeated_states = state.repeat(self.num_samples, 1).to(device)
+        repeated_next_states = next_state.repeat(self.num_samples, 1).to(device)
 
         with torch.no_grad():
             repeated_actions, repeated_log_probs = self.actor.sample(repeated_states)
@@ -178,13 +179,13 @@ class CQL_sac:
         cql_q1 = torch.cat([q1_from_random - rand_density, q1_from_curr_actions - repeated_log_probs, q1_from_next_actions - repeated_next_log_probs], dim=1)
         cql_q2 = torch.cat([q2_from_random - rand_density, q2_from_curr_actions - repeated_log_probs, q2_from_next_actions - repeated_next_log_probs], dim=1)
         
-        logsumexp_q1 = torch.logsumexp(cql_q1, dim=1)
-        logsumexp_q2 = torch.logsumexp(cql_q2, dim=1)
+        logsumexp_q1 = torch.logsumexp(cql_q1, dim=1).to(device)
+        logsumexp_q2 = torch.logsumexp(cql_q2, dim=1).to(device)
 
         repeated_q1 = q1.repeat(self.num_samples, 1)
         repeated_q2 = q2.repeat(self.num_samples, 1)
 
-        self.cql_alpha = torch.clamp(torch.exp(self.cql_alpha_log), min=0.0, max=1e6)
+        self.cql_alpha = torch.clamp(torch.exp(self.cql_alpha_log), min=0.0, max=1e6).to(device)
         cql_loss1 = self.cql_alpha * self.args.cql_tau * ((logsumexp_q1 - repeated_q1).mean() - 1)
         cql_loss2 = self.cql_alpha * self.args.cql_tau * ((logsumexp_q2 - repeated_q2).mean() - 1)
         cql_alpha_loss = -(cql_loss1 + cql_loss2) * 0.5  # For maximizing alpha, add -
@@ -208,7 +209,7 @@ class CQL_sac:
         Compute alpha loss (SAC)
         """
         # Compute alpha loss
-        alpha_loss = -(self.log_alpha * (log_prob_from_current.detach() + self.target_entropy)).mean()
+        alpha_loss = -(self.log_alpha.to(device) * (log_prob_from_current.detach().to(device) + self.target_entropy)).mean()
         
 
         """
@@ -217,7 +218,7 @@ class CQL_sac:
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.alpha_optimizer.step()
-        self.alpha = self.log_alpha.exp()
+        self.alpha = self.log_alpha.exp().to(device)
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -253,7 +254,7 @@ class CQL_sac:
                                     + self.args.tau * current_param.data.clone().detach()
       
     def get_action(self, state):
-        state = torch.tensor(state, dtype=torch.float).unsqueeze(0)
+        state = torch.tensor(state, dtype=torch.float).unsqueeze(0).to(device)
         action, _ = self.actor.sample(state)
         if self.args.continuous_space:
             return action.detach().cpu().numpy()[0]
@@ -266,27 +267,33 @@ class CQL_sac:
         print('Start Evaluation!!!!!!!!!!!')
 
         with torch.no_grad():
-            state = self.env.reset()
-            done = False
-            episode_steps = 0
-            episode_reward = 0
-            while not done:
-                if self.args.render:
-                    self.env.render()
-                action = self.get_action(state)
-                next_state, reward, done, _ = self.env.step(action)
-                
-                episode_reward += reward
-                episode_steps += 1
-                state = next_state
+            avg_episode_reward = 0
+            total_episode_steps = 0
+            for _ in range(10):
+                state = self.env.reset()
+                done = False
+                episode_steps = 0
+                episode_reward = 0
+                while not done:
+                    if self.args.render:
+                        self.env.render()
+                    action = self.get_action(state)
+                    next_state, reward, done, _ = self.env.step(action)
+                    
+                    episode_reward += reward
+                    episode_steps += 1
+                    state = next_state
 
-                if episode_steps > self.args.max_episode_len:
-                    done = True
-                    break
+                    if episode_steps > self.args.max_episode_len:
+                        done = True
+                        break
+                avg_episode_reward += episode_reward
+                total_episode_steps += episode_steps
 
-            print('\n')
-            print(f"Epdisode steps : {episode_steps}")
-            print(f"Epdisode reward : {episode_reward}")
+            avg_episode_reward /= 10
+
+            print(f"Average epdisode reward : {avg_episode_reward}")
+            print(f"Total epdisode steps : {total_episode_steps}")
             print('#'*50)
             print('\n\n\n')
 

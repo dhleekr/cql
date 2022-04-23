@@ -87,7 +87,7 @@ class SAC:
             state = self.env.reset()
 
             while not done:
-                if self.args.render and i_episode % self.args.render_period == 0:
+                if self.args.render and i_episode % self.args.render_freq == 0:
                     self.env.render()
 
                 if len(replay_buffer) > self.args.batch_size:
@@ -122,7 +122,7 @@ class SAC:
                 torch.save(self.actor.state_dict(), f'./models/actor_{self.args.env}.pt')
                 torch.save(self.alpha, f'./models/alpha_{self.args.env}.pt')
 
-            if i_episode % self.args.logging_period == 0:
+            if i_episode % self.args.logging_freq == 0:
                 self.logging()
             
             if total_timesteps > self.args.timesteps:
@@ -168,7 +168,7 @@ class SAC:
         q2_from_current = self.critic2(state, action_from_current)
         q_from_current = torch.minimum(q1_from_current, q2_from_current)
 
-        actor_loss = (self.alpha * log_prob_from_current - q_from_current).mean()
+        actor_loss = -(q_from_current - self.alpha * log_prob_from_current).mean()
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()

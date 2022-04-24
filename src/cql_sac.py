@@ -1,17 +1,19 @@
+from .networks import Actor_continuous, Actor_discrete,Critic
 from collections import deque, namedtuple
 import random
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.optim import Adam
-import numpy as np
-from .networks import Actor_continuous, Actor_discrete,Critic
+from torch.utils.tensorboard import SummaryWriter
+
 
 
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 
 class ReplayBuffer:
-    def __init__(self, buffer_size=1e6):
+    def __init__(self, buffer_size=2e6):
         self.buffer = deque([], maxlen=buffer_size)
     
     def push(self, *args): # s, a, r, s', done
@@ -71,19 +73,23 @@ class CQL_sac:
             'total_timesteps' : [],
             'critic_loss' : [],
             'actor_loss' : [],
+            'cql_loss' : [],
             'alpha_loss' : [],
             'q_target' : [],
             'q1' : [],
             'q2' : [],
+            'alpha' : [],
+            'cql_alpha' : [],
             'log_prob' : []
         }
+        self.writer = SummaryWriter(f"./results/{self.args.env}")
 
         print("Initializing...")
 
     def train(self):
         print("Training...")
         replay_buffer = ReplayBuffer(self.args.buffer_size)
-        total_timesteps = 0
+        self.total_timesteps = 0
         gradient_steps = 0
         for idx in range(len(self.dataset['observations'])):
             state = self.dataset['observations'][idx]
@@ -100,10 +106,10 @@ class CQL_sac:
                     self.update(batch, gradient_steps)
                     gradient_steps += 1
             
-            self.logger['total_timesteps'].append(total_timesteps)
-            total_timesteps += 1
+            self.logger['total_timesteps'].append(self.total_timesteps + 1)
+            self.total_timesteps += 1
 
-            if self.args.save and total_timesteps % self.args.save_freq == 0:
+            if self.args.save and self.total_timesteps % self.args.save_freq == 0:
                 print("New model saved!!!!!!!!!!!!")
                 torch.save(self.critic1.state_dict(), f'./models/critic1_{self.args.env}.pt')
                 torch.save(self.critic2.state_dict(), f'./models/critic2_{self.args.env}.pt')
@@ -113,16 +119,17 @@ class CQL_sac:
                 torch.save(self.alpha, f'./models/alpha_{self.args.env}.pt')
                 torch.save(self.cql_alpha, f'./models/cql_alpha_{self.args.env}.pt')
             
-            if total_timesteps % self.args.logging_freq == 0:
+            if self.total_timesteps % self.args.logging_freq == 0:
                 self.logging()
 
-            if total_timesteps % self.args.eval_freq == 0:
+            if self.total_timesteps % self.args.eval_freq == 0:
                 self.evaluation()
             
-            if total_timesteps > self.args.timesteps:
+            if self.total_timesteps > self.args.timesteps:
                 break
             
-
+        self.writer.flush()
+        self.writer.close()
         print("Finished!!!!")
                
     def update(self, batch, gradient_steps):
@@ -133,6 +140,31 @@ class CQL_sac:
         reward = (reward - reward.mean()) / (reward.std() + 1e-7)
         next_state = torch.tensor(next_state, dtype=torch.float).to(device)
         done = torch.tensor(done, dtype=torch.float).unsqueeze(1).to(device)
+
+
+        """
+        Compute alpha loss (SAC)
+        """
+        # Compute alpha loss
+        action_from_current, log_prob_from_current = self.actor.sample(state)
+        alpha_loss = -(self.log_alpha.to(device) * (log_prob_from_current.detach().to(device) + self.target_entropy)).mean()
+        
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+        self.alpha = self.log_alpha.exp().to(device)
+        
+        """
+        Compute actor loss
+        """
+        q1_from_current = self.critic1(state, action_from_current)
+        q2_from_current = self.critic2(state, action_from_current)
+        q_from_current = torch.min(q1_from_current, q2_from_current)
+        actor_loss = -(q_from_current - self.alpha * log_prob_from_current).mean() 
+
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
 
         """
         Compute critic loss : std_bellman_error_loss, cql_loss(-cql_alpha_loss)
@@ -151,7 +183,7 @@ class CQL_sac:
         q1_loss = F.mse_loss(q1, q_target)
         q2_loss = F.mse_loss(q2, q_target)
         
-        std_bellman_error_loss = q1_loss + q2_loss
+        # std_bellman_error_loss = q1_loss + q2_loss
 
         # Compute CQL loss
         random_sampled_actions = torch.tensor([]).to(device)
@@ -159,84 +191,66 @@ class CQL_sac:
             temp = torch.FloatTensor(state.shape[0] * self.num_samples, 1).uniform_(self.env.action_space.low[i], self.env.action_space.high[i])
             random_sampled_actions = torch.cat((random_sampled_actions.to(device), temp.to(device)), dim=1)
 
-        repeated_states = state.repeat(self.num_samples, 1).to(device)
-        repeated_next_states = next_state.repeat(self.num_samples, 1).to(device)
+        repeated_states = state.unsqueeze(1).repeat(1, self.num_samples, 1).view(state.shape[0] * self.num_samples, state.shape[1])
+        repeated_next_states = next_state.unsqueeze(1).repeat(1, self.num_samples, 1).view(next_state.shape[0] * self.num_samples, next_state.shape[1])
 
         with torch.no_grad():
             repeated_actions, repeated_log_probs = self.actor.sample(repeated_states)
             repeated_next_actions, repeated_next_log_probs = self.actor.sample(repeated_next_states)
 
-        q1_from_random = self.critic1(repeated_states, random_sampled_actions)
-        q2_from_random = self.critic2(repeated_states, random_sampled_actions)
+        q1_from_random = self.critic1(repeated_states, random_sampled_actions).view(state.shape[0], self.num_samples, 1)
+        q2_from_random = self.critic2(repeated_states, random_sampled_actions).view(state.shape[0], self.num_samples, 1)
         rand_density = np.log(0.5 ** repeated_actions.shape[-1])
         
-        q1_from_curr_actions = self.critic1(repeated_states, repeated_actions)
-        q2_from_curr_actions = self.critic2(repeated_states, repeated_actions)
+        q1_from_curr_actions = self.critic1(repeated_states, repeated_actions).view(state.shape[0], self.num_samples, 1)
+        q2_from_curr_actions = self.critic2(repeated_states, repeated_actions).view(state.shape[0], self.num_samples, 1)
 
-        q1_from_next_actions = self.critic1(repeated_states, repeated_next_actions)
-        q2_from_next_actions = self.critic2(repeated_states, repeated_next_actions)
+        q1_from_next_actions = self.critic1(repeated_states, repeated_next_actions).view(state.shape[0], self.num_samples, 1)
+        q2_from_next_actions = self.critic2(repeated_states, repeated_next_actions).view(state.shape[0], self.num_samples, 1)
 
-        cql_q1 = torch.cat([q1_from_random - rand_density, q1_from_curr_actions - repeated_log_probs, q1_from_next_actions - repeated_next_log_probs], dim=1)
-        cql_q2 = torch.cat([q2_from_random - rand_density, q2_from_curr_actions - repeated_log_probs, q2_from_next_actions - repeated_next_log_probs], dim=1)
+        cql_q1 = torch.cat([q1_from_random - rand_density,
+                            q1_from_curr_actions - repeated_log_probs.view(state.shape[0], self.num_samples, 1), 
+                            q1_from_next_actions - repeated_next_log_probs.view(state.shape[0], self.num_samples, 1)], 
+                            dim=1)
+        cql_q2 = torch.cat([q2_from_random - rand_density, 
+                            q2_from_curr_actions - repeated_log_probs.view(state.shape[0], self.num_samples, 1), 
+                            q2_from_next_actions - repeated_next_log_probs.view(state.shape[0], self.num_samples, 1)], 
+                            dim=1)
         
         logsumexp_q1 = torch.logsumexp(cql_q1, dim=1).to(device)
         logsumexp_q2 = torch.logsumexp(cql_q2, dim=1).to(device)
 
-        repeated_q1 = q1.repeat(self.num_samples, 1)
-        repeated_q2 = q2.repeat(self.num_samples, 1)
-
-        self.cql_alpha = torch.clamp(torch.exp(self.cql_alpha_log), min=0.0, max=1e6).to(device)
-        cql_loss1 = self.cql_alpha * self.args.cql_tau * ((logsumexp_q1 - repeated_q1).mean() - 1)
-        cql_loss2 = self.cql_alpha * self.args.cql_tau * ((logsumexp_q2 - repeated_q2).mean() - 1)
-        cql_alpha_loss = -(cql_loss1 + cql_loss2) * 0.5  # For maximizing alpha, add -
+        self.cql_alpha = torch.clamp(self.cql_alpha_log.exp(), min=0.0, max=1e6).to(device)
+        cql_loss1 = self.cql_alpha * ((logsumexp_q1 - q1).mean() - self.args.cql_tau)
+        cql_loss2 = self.cql_alpha * ((logsumexp_q2 - q2).mean() - self.args.cql_tau)
+        cql_alpha_loss = -(cql_loss1 + cql_loss2) # For maximizing alpha, add -
 
         self.cql_alpha_optimizer.zero_grad()
         cql_alpha_loss.backward(retain_graph=True)
         self.cql_alpha_optimizer.step()
 
-        critic_loss = std_bellman_error_loss + cql_loss1 + cql_loss2
-
-        """
-        Compute actor loss
-        """
-        action_from_current, log_prob_from_current = self.actor.sample(state)
-        q1_from_current = self.critic1(state, action_from_current)
-        q2_from_current = self.critic2(state, action_from_current)
-        q_from_current = torch.min(q1_from_current, q2_from_current)
-        actor_loss = -(q_from_current - self.alpha * log_prob_from_current).mean()
-
-        """
-        Compute alpha loss (SAC)
-        """
-        # Compute alpha loss
-        alpha_loss = -(self.log_alpha.to(device) * (log_prob_from_current.detach().to(device) + self.target_entropy)).mean()
-        
+        critic_loss = q1_loss + q2_loss + cql_loss1 + cql_loss2
 
         """
         Parameter updates
-        """
-        self.alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        self.alpha_optimizer.step()
-        self.alpha = self.log_alpha.exp().to(device)
-
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        self.actor_optimizer.step()
-
+        """        
         self.critic1_optimizer.zero_grad()
         self.critic2_optimizer.zero_grad()
         critic_loss.backward()
         self.critic1_optimizer.step()
         self.critic2_optimizer.step()
 
+
         # Append log
         self.logger['critic_loss'].append(critic_loss.item())
         self.logger['actor_loss'].append(actor_loss.item())
         self.logger['alpha_loss'].append(alpha_loss.item())
+        self.logger['cql_loss'].append((cql_loss1 + cql_loss2).item())
         self.logger['q_target'].append(torch.sum(q_target)/len(q_target))
         self.logger['q1'].append(torch.sum(q1)/len(q1))
         self.logger['q2'].append(torch.sum(q2)/len(q2))
+        self.logger['alpha'].append(self.alpha.item())
+        self.logger['cql_alpha'].append(self.cql_alpha.item())
         if self.args.continuous_space:
             self.logger['log_prob'].append(torch.sum(log_prob_from_current)/len(log_prob_from_current))
 
@@ -270,6 +284,7 @@ class CQL_sac:
             avg_episode_reward = 0
             total_episode_steps = 0
             for _ in range(10):
+                # self.env.seed(random.randint(0, 1000))
                 state = self.env.reset()
                 done = False
                 episode_steps = 0
@@ -285,7 +300,6 @@ class CQL_sac:
                     state = next_state
 
                     if episode_steps > self.args.max_episode_len:
-                        done = True
                         break
                 avg_episode_reward += episode_reward
                 total_episode_steps += episode_steps
@@ -297,14 +311,19 @@ class CQL_sac:
             print('#'*50)
             print('\n\n\n')
 
+            self.writer.add_scalar("Average return", avg_episode_reward, self.total_timesteps)
+
     def logging(self):
         total_timesteps = self.logger['total_timesteps'][0]
         avg_critic_loss = sum(self.logger['critic_loss']) / (len(self.logger['critic_loss']) + 1e-7)
         avg_actor_loss = sum(self.logger['actor_loss']) / (len(self.logger['actor_loss']) + 1e-7)
+        avg_cql_loss = sum(self.logger['cql_loss']) / (len(self.logger['cql_loss']) + 1e-7)
         avg_alpha_loss = sum(self.logger['alpha_loss']) / (len(self.logger['alpha_loss']) + 1e-7)
         avg_q_target = sum(self.logger['q_target']) / (len(self.logger['q_target']) + 1e-7)
         avg_q1 = sum(self.logger['q1']) / (len(self.logger['q1']) + 1e-7)
         avg_q2 = sum(self.logger['q2']) / (len(self.logger['q2']) + 1e-7)
+        alpha = sum(self.logger['alpha']) / (len(self.logger['alpha']) + 1e-7)
+        cql_alpha = sum(self.logger['cql_alpha']) / (len(self.logger['cql_alpha']) + 1e-7)
         avg_log_prob = sum(self.logger['log_prob']) / (len(self.logger['log_prob']) + 1e-7)
         
         print('#'*50)
@@ -312,9 +331,12 @@ class CQL_sac:
         print(f"Critic loss : {avg_critic_loss}")
         print(f"Actor loss : {avg_actor_loss}")
         print(f"Alpha loss : {avg_alpha_loss}")
+        print(f"CQL loss : {avg_cql_loss}")
         print(f"Q target : {avg_q_target}")
         print(f"Q1 : {avg_q1}")
         print(f"Q2 : {avg_q2}")
+        print(f"Alpha : {alpha}")
+        print(f"CQL alpha : {cql_alpha}")
         print(f"Log prob : {avg_log_prob}")
         print('#'*50)
         print('\n')
@@ -323,25 +345,25 @@ class CQL_sac:
             self.logger[k] = []
 
     def test(self):        
-        self.actor.load_state_dict(torch.load(f"{self.args.models_path}/actor_{self.args.env}.pt"))
+        self.actor.load_state_dict(torch.load(f"{self.args.models_path}/actor_{self.args.env}.pt", map_location=device))
 
-        for _ in range(10):
+        for _ in range(15):
             done = False
+            self.env.seed(random.randint(0, 1000))
             state = self.env.reset()
             episode_steps = 0
             episode_reward = 0
 
-            while not done:
+            while True:
                 self.env.render()
                 action = self.get_action(state)
+                # action = self.env.action_space.sample()
                 next_state, reward, done, _ = self.env.step(action)
-                
                 episode_reward += reward
                 episode_steps += 1
                 state = next_state
                     
                 if episode_steps >= self.args.max_episode_len:
-                    done = True
                     break
 
             print('#'*50)

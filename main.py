@@ -11,7 +11,7 @@ parser.add_argument('--gamma', dest='gamma', default=0.99, type=float)
 parser.add_argument('--alpha', dest='alpha', default=0.05, type=float)
 parser.add_argument('--tau', dest='tau', default=0.005, type=float)
 parser.add_argument('--cql_alpha', dest='cql_alpha', default=1., type=float)
-parser.add_argument('--cql_tau', dest='cql_tau', default=5., type=float)
+parser.add_argument('--cql_tau', dest='cql_tau', default=10., type=float)
 
 parser.add_argument('--batch_size', dest='batch_size', default=256, type=int)
 parser.add_argument('--hidden_dim', nargs='+', dest='hidden_dim', default=[256], type=int)

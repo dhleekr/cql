@@ -2,3 +2,4 @@ d4rl/
 models/
 src/__pycache__/
 results/
+traj.pkl

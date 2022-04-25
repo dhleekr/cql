@@ -244,14 +244,7 @@ class SAC:
             self.logger[k] = []
 
     def test(self):        
-        self.critic1.load_state_dict(torch.load(f"{self.args.models_path}/critic1_{self.args.env}.pt"))
-        self.critic2.load_state_dict(torch.load(f"{self.args.models_path}/critic2_{self.args.env}.pt"))
-        self.critic1_target.load_state_dict(torch.load(f"{self.args.models_path}/critic1_target_{self.args.env}.pt"))
-        self.critic2_target.load_state_dict(torch.load(f"{self.args.models_path}/critic2_target_{self.args.env}.pt"))
         self.actor.load_state_dict(torch.load(f"{self.args.models_path}/actor_{self.args.env}.pt"))
-        self.alpha = torch.load(f"{self.args.models_path}/alpha_{self.args.env}.pt")
-
-
         for _ in range(10):
             done = False
             state = self.env.reset()
@@ -276,3 +269,52 @@ class SAC:
             print(f"Epdisode reward : {episode_reward}")
             print('#'*50)
             print('\n')
+
+    def generate_dataset(self):
+        import pickle
+        self.actor.load_state_dict(torch.load(f"{self.args.models_path}/actor_{self.args.env}.pt"))
+        traj = {'observations' : [], 
+                'actions' : [], 
+                'next_observations' : [], 
+                'rewards' : [], 
+                'terminals' : []}
+
+        for i in range(10000):
+            self.env.seed(random.randint(0, 1000))
+            done = False
+            state = self.env.reset()
+            episode_steps = 0
+            episode_reward = 0
+
+            while not done:
+                # self.env.render()
+                action = self.get_action(state)
+                next_state, reward, done, _ = self.env.step(action)
+                
+                episode_reward += reward
+                episode_steps += 1
+                state = next_state
+                    
+                if episode_steps >= self.args.max_episode_len:
+                    done = True
+
+                if done:
+                    traj['observations'].append(state)
+                    traj['actions'].append(action)
+                    traj['next_observations'].append(next_state)
+                    traj['rewards'].append(reward)
+                    traj['terminals'].append(1)
+                else:
+                    traj['observations'].append(state)
+                    traj['actions'].append(action)
+                    traj['next_observations'].append(next_state)
+                    traj['rewards'].append(reward)
+                    traj['terminals'].append(0)
+            
+            if i % 1000 == 0:
+                print(f"Episode : {i}")
+            
+        with open('traj.pkl', 'wb') as tf:
+            pickle.dump(traj, tf)
+
+        

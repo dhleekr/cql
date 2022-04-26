@@ -57,8 +57,6 @@ class CQL_sac:
 
         self.critic1_optimizer = Adam(self.critic1.parameters(), lr=args.lr)
         self.critic2_optimizer = Adam(self.critic2.parameters(), lr=args.lr)
-        self.critic1_target_optimizer = Adam(self.critic1_target.parameters(), lr=args.lr)
-        self.critic2_target_optimizer = Adam(self.critic2_target.parameters(), lr=args.lr)
 
         # Alpha
         self.target_entropy = -torch.prod(torch.Tensor(env.action_space.shape)).item()
@@ -71,13 +69,27 @@ class CQL_sac:
 
         self.logger = {
             'total_timesteps' : [],
-            'critic_loss' : [],
             'actor_loss' : [],
-            'cql_loss' : [],
+            'critic_loss' : [],
+            'q1_loss' : [],
+            'q2_loss' : [],
+            'cql_loss1' : [],
+            'cql_loss2' : [],
             'alpha_loss' : [],
+            'cql_alpha_loss' : [],
             'q_target' : [],
             'q1' : [],
             'q2' : [],
+            'q1_from_random' : [],
+            'q2_from_random' : [],
+            'q1_from_curr_actions' : [],
+            'q2_from_curr_actions' : [],
+            'q1_from_next_actions' : [],
+            'q2_from_next_actions' : [],
+            'logsumexp_q1' : [],
+            'logsumexp_q2' : [],
+            'q1_diff' : [],
+            'q2_diff' : [],
             'alpha' : [],
             'cql_alpha' : [],
             'log_prob' : []
@@ -106,9 +118,6 @@ class CQL_sac:
                     self.update(batch, gradient_steps)
                     gradient_steps += 1
             
-            self.logger['total_timesteps'].append(self.total_timesteps + 1)
-            self.total_timesteps += 1
-
             if self.args.save and self.total_timesteps % self.args.save_freq == 0:
                 print("New model saved!!!!!!!!!!!!")
                 torch.save(self.critic1.state_dict(), f'./models/critic1_{self.args.env}.pt')
@@ -120,6 +129,7 @@ class CQL_sac:
                 torch.save(self.cql_alpha, f'./models/cql_alpha_{self.args.env}.pt')
             
             if self.total_timesteps % self.args.logging_freq == 0:
+                self.logger['total_timesteps'].append(self.total_timesteps) 
                 self.logging()
 
             if self.total_timesteps % self.args.eval_freq == 0:
@@ -127,6 +137,8 @@ class CQL_sac:
             
             if self.total_timesteps > self.args.timesteps:
                 break
+            
+            self.total_timesteps += 1
             
         self.writer.flush()
         self.writer.close()
@@ -137,22 +149,22 @@ class CQL_sac:
         state = torch.tensor(state, dtype=torch.float).to(device)
         action = torch.tensor(action, dtype=torch.float).to(device)
         reward = torch.tensor(reward, dtype=torch.float).unsqueeze(1).to(device)
-        reward = (reward - reward.mean()) / (reward.std() + 1e-7)
+        # reward = (reward - reward.mean()) / (reward.std() + 1e-7)
         next_state = torch.tensor(next_state, dtype=torch.float).to(device)
         done = torch.tensor(done, dtype=torch.float).unsqueeze(1).to(device)
-
-
+        
+        
         """
         Compute alpha loss (SAC)
         """
         # Compute alpha loss
         action_from_current, log_prob_from_current = self.actor.sample(state)
-        alpha_loss = -(self.log_alpha.to(device) * (log_prob_from_current.detach().to(device) + self.target_entropy)).mean()
-        
+        alpha_loss = -(self.log_alpha.to(device) * (log_prob_from_current + self.target_entropy).detach().to(device)).mean()
+
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.alpha_optimizer.step()
-        self.alpha = self.log_alpha.exp().to(device)
+        self.alpha = torch.exp(self.log_alpha).to(device)
         
         """
         Compute actor loss
@@ -160,7 +172,7 @@ class CQL_sac:
         q1_from_current = self.critic1(state, action_from_current)
         q2_from_current = self.critic2(state, action_from_current)
         q_from_current = torch.min(q1_from_current, q2_from_current)
-        actor_loss = -(q_from_current - self.alpha * log_prob_from_current).mean() 
+        actor_loss = -(q_from_current - self.alpha * log_prob_from_current).mean()
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -171,22 +183,21 @@ class CQL_sac:
         """
         # Compute std_bellman_error_loss
         # next states come from replay buffer and next actions come from current policy
-        with torch.no_grad():
-            next_action, next_log_prob = self.actor.sample(next_state)
-            q1_target = self.critic1_target(next_state, next_action)
-            q2_target = self.critic2_target(next_state, next_action)
-            q_target = reward + (1 - done) * self.args.gamma * (torch.min(q1_target, q2_target).to(device) - self.alpha * next_log_prob)
+        next_action, next_log_prob = self.actor.sample(next_state)
+        q1_target = self.critic1_target(next_state, next_action)
+        q2_target = self.critic2_target(next_state, next_action)
+        q_target = reward + (1 - done) * self.args.gamma * (torch.min(q1_target, q2_target).to(device) - self.alpha * next_log_prob)
 
         q1 = self.critic1(state, action)
         q2 = self.critic2(state, action)
 
-        q1_loss = F.mse_loss(q1, q_target)
-        q2_loss = F.mse_loss(q2, q_target)
+        q1_loss = F.mse_loss(q1, q_target.detach())
+        q2_loss = F.mse_loss(q2, q_target.detach())
         
         # std_bellman_error_loss = q1_loss + q2_loss
 
         # Compute CQL loss
-        random_sampled_actions = torch.tensor([]).to(device)
+        random_sampled_actions = torch.tensor([], requires_grad=False).to(device)
         for i in range(action.shape[-1]):
             temp = torch.FloatTensor(state.shape[0] * self.num_samples, 1).uniform_(self.env.action_space.low[i], self.env.action_space.high[i])
             random_sampled_actions = torch.cat((random_sampled_actions.to(device), temp.to(device)), dim=1)
@@ -194,13 +205,14 @@ class CQL_sac:
         repeated_states = state.unsqueeze(1).repeat(1, self.num_samples, 1).view(state.shape[0] * self.num_samples, state.shape[1])
         repeated_next_states = next_state.unsqueeze(1).repeat(1, self.num_samples, 1).view(next_state.shape[0] * self.num_samples, next_state.shape[1])
 
-        with torch.no_grad():
-            repeated_actions, repeated_log_probs = self.actor.sample(repeated_states)
-            repeated_next_actions, repeated_next_log_probs = self.actor.sample(repeated_next_states)
+        repeated_actions, repeated_log_probs = self.actor.sample(repeated_states)
+        repeated_next_actions, repeated_next_log_probs = self.actor.sample(repeated_next_states)
+        repeated_actions, repeated_log_probs = repeated_actions.detach(), repeated_log_probs.detach()
+        repeated_next_actions, repeated_next_log_probs = repeated_next_actions.detach(), repeated_next_log_probs.detach()
 
         q1_from_random = self.critic1(repeated_states, random_sampled_actions).view(state.shape[0], self.num_samples, 1)
         q2_from_random = self.critic2(repeated_states, random_sampled_actions).view(state.shape[0], self.num_samples, 1)
-        rand_density = np.log(0.5 ** repeated_actions.shape[-1])
+        rand_density = np.log(0.5 ** repeated_actions.shape[1])
         
         q1_from_curr_actions = self.critic1(repeated_states, repeated_actions).view(state.shape[0], self.num_samples, 1)
         q2_from_curr_actions = self.critic2(repeated_states, repeated_actions).view(state.shape[0], self.num_samples, 1)
@@ -216,39 +228,55 @@ class CQL_sac:
                             q2_from_curr_actions - repeated_log_probs.view(state.shape[0], self.num_samples, 1), 
                             q2_from_next_actions - repeated_next_log_probs.view(state.shape[0], self.num_samples, 1)], 
                             dim=1)
-        
+          
         logsumexp_q1 = torch.logsumexp(cql_q1, dim=1).to(device)
         logsumexp_q2 = torch.logsumexp(cql_q2, dim=1).to(device)
 
-        self.cql_alpha = torch.clamp(self.cql_alpha_log.exp(), min=0.0, max=1e6).to(device)
-        cql_loss1 = self.cql_alpha * ((logsumexp_q1 - q1).mean() - self.args.cql_tau)
-        cql_loss2 = self.cql_alpha * ((logsumexp_q2 - q2).mean() - self.args.cql_tau)
-        cql_alpha_loss = -(cql_loss1 + cql_loss2) # For maximizing alpha, add -
+        q1_diff = (logsumexp_q1 - q1).mean() * self.args.cql_scaling
+        q2_diff = (logsumexp_q2 - q2).mean() * self.args.cql_scaling
+
+        self.cql_alpha = torch.clamp(torch.exp(self.cql_alpha_log), min=0.0, max=1e6).to(device)
+        cql_loss1 = self.cql_alpha * (q1_diff - self.args.cql_tau) 
+        cql_loss2 = self.cql_alpha * (q2_diff - self.args.cql_tau)
+        cql_alpha_loss = -(cql_loss1 + cql_loss2) * 0.5 # For maximizing alpha, add -
 
         self.cql_alpha_optimizer.zero_grad()
         cql_alpha_loss.backward(retain_graph=True)
         self.cql_alpha_optimizer.step()
 
-        critic_loss = q1_loss + q2_loss + cql_loss1 + cql_loss2
-
-        """
-        Parameter updates
-        """        
+        critic1_loss = q1_loss + cql_loss1
+        critic2_loss = q2_loss + cql_loss2
+        critic_loss = critic1_loss + critic2_loss
+      
         self.critic1_optimizer.zero_grad()
         self.critic2_optimizer.zero_grad()
-        critic_loss.backward()
+        critic1_loss.backward(retain_graph=True)
+        critic2_loss.backward(retain_graph=True)
         self.critic1_optimizer.step()
         self.critic2_optimizer.step()
 
-
         # Append log
-        self.logger['critic_loss'].append(critic_loss.item())
         self.logger['actor_loss'].append(actor_loss.item())
+        self.logger['critic_loss'].append((critic1_loss + critic2_loss).item())
+        self.logger['q1_loss'].append(q1_loss.item())
+        self.logger['q2_loss'].append(q2_loss.item())
+        self.logger['cql_loss1'].append(cql_loss1.item())
+        self.logger['cql_loss2'].append(cql_loss2.item())
         self.logger['alpha_loss'].append(alpha_loss.item())
-        self.logger['cql_loss'].append((cql_loss1 + cql_loss2).item())
-        self.logger['q_target'].append(torch.sum(q_target)/len(q_target))
-        self.logger['q1'].append(torch.sum(q1)/len(q1))
-        self.logger['q2'].append(torch.sum(q2)/len(q2))
+        self.logger['cql_alpha_loss'].append(cql_alpha_loss.item())
+        self.logger['q_target'].append(q_target.mean().item())
+        self.logger['q1'].append(q1.mean().item())
+        self.logger['q2'].append(q2.mean().item())
+        self.logger['q1_from_random'].append(q1_from_random.mean().item())
+        self.logger['q2_from_random'].append(q2_from_random.mean().item())
+        self.logger['q1_from_curr_actions'].append(q1_from_curr_actions.mean().item())
+        self.logger['q2_from_curr_actions'].append(q2_from_curr_actions.mean().item())
+        self.logger['q1_from_next_actions'].append(q1_from_next_actions.mean().item())
+        self.logger['q2_from_next_actions'].append(q2_from_next_actions.mean().item())
+        self.logger['logsumexp_q1'].append(logsumexp_q1.mean().item())
+        self.logger['logsumexp_q2'].append(logsumexp_q2.mean().item())
+        self.logger['q1_diff'].append(q1_diff.item())
+        self.logger['q2_diff'].append(q2_diff.item())
         self.logger['alpha'].append(self.alpha.item())
         self.logger['cql_alpha'].append(self.cql_alpha.item())
         if self.args.continuous_space:
@@ -289,7 +317,7 @@ class CQL_sac:
                 done = False
                 episode_steps = 0
                 episode_reward = 0
-                while not done:
+                for _ in range(self.args.max_episode_len):
                     if self.args.render:
                         self.env.render()
                     action = self.get_action(state)
@@ -299,15 +327,17 @@ class CQL_sac:
                     episode_steps += 1
                     state = next_state
 
-                    if episode_steps > self.args.max_episode_len:
+                    if done:
                         break
+
                 avg_episode_reward += episode_reward
                 total_episode_steps += episode_steps
-
+            
             avg_episode_reward /= 10
+            avg_episode_steps = total_episode_steps / 10
 
             print(f"Average epdisode reward : {avg_episode_reward}")
-            print(f"Total epdisode steps : {total_episode_steps}")
+            print(f"Average epdisode steps : {avg_episode_steps}")
             print('#'*50)
             print('\n\n\n')
 
@@ -315,29 +345,57 @@ class CQL_sac:
 
     def logging(self):
         total_timesteps = self.logger['total_timesteps'][0]
-        avg_critic_loss = sum(self.logger['critic_loss']) / (len(self.logger['critic_loss']) + 1e-7)
-        avg_actor_loss = sum(self.logger['actor_loss']) / (len(self.logger['actor_loss']) + 1e-7)
-        avg_cql_loss = sum(self.logger['cql_loss']) / (len(self.logger['cql_loss']) + 1e-7)
-        avg_alpha_loss = sum(self.logger['alpha_loss']) / (len(self.logger['alpha_loss']) + 1e-7)
-        avg_q_target = sum(self.logger['q_target']) / (len(self.logger['q_target']) + 1e-7)
-        avg_q1 = sum(self.logger['q1']) / (len(self.logger['q1']) + 1e-7)
-        avg_q2 = sum(self.logger['q2']) / (len(self.logger['q2']) + 1e-7)
+        actor_loss = sum(self.logger['actor_loss']) / (len(self.logger['actor_loss']) + 1e-7)
+        critic_loss = sum(self.logger['critic_loss']) / (len(self.logger['critic_loss']) + 1e-7)
+        q1_loss = sum(self.logger['q1_loss']) / (len(self.logger['q1_loss']) + 1e-7)
+        q2_loss = sum(self.logger['q2_loss']) / (len(self.logger['q2_loss']) + 1e-7)
+        cql_loss1 = sum(self.logger['cql_loss1']) / (len(self.logger['cql_loss1']) + 1e-7)
+        cql_loss2 = sum(self.logger['cql_loss2']) / (len(self.logger['cql_loss2']) + 1e-7)
+        alpha_loss = sum(self.logger['alpha_loss']) / (len(self.logger['alpha_loss']) + 1e-7)
+        cql_alpha_loss = sum(self.logger['cql_alpha_loss']) / (len(self.logger['cql_alpha_loss']) + 1e-7)
+        q_target = sum(self.logger['q_target']) / (len(self.logger['q_target']) + 1e-7)
+        q1 = sum(self.logger['q1']) / (len(self.logger['q1']) + 1e-7)
+        q2 = sum(self.logger['q2']) / (len(self.logger['q2']) + 1e-7)
+        q1_from_random = sum(self.logger['q1_from_random']) / (len(self.logger['q1_from_random']) + 1e-7)
+        q2_from_random = sum(self.logger['q2_from_random']) / (len(self.logger['q2_from_random']) + 1e-7)
+        q1_from_curr_actions = sum(self.logger['q1_from_curr_actions']) / (len(self.logger['q1_from_curr_actions']) + 1e-7)
+        q2_from_curr_actions = sum(self.logger['q2_from_curr_actions']) / (len(self.logger['q2_from_curr_actions']) + 1e-7)
+        q1_from_next_actions = sum(self.logger['q1_from_next_actions']) / (len(self.logger['q1_from_next_actions']) + 1e-7)
+        q2_from_next_actions = sum(self.logger['q2_from_next_actions']) / (len(self.logger['q2_from_next_actions']) + 1e-7)
+        logsumexp_q1 = sum(self.logger['logsumexp_q1']) / (len(self.logger['logsumexp_q1']) + 1e-7)
+        logsumexp_q2 = sum(self.logger['logsumexp_q2']) / (len(self.logger['logsumexp_q2']) + 1e-7)
+        q1_diff = sum(self.logger['q1_diff']) / (len(self.logger['q1_diff']) + 1e-7)
+        q2_diff = sum(self.logger['q2_diff']) / (len(self.logger['q2_diff']) + 1e-7)
         alpha = sum(self.logger['alpha']) / (len(self.logger['alpha']) + 1e-7)
         cql_alpha = sum(self.logger['cql_alpha']) / (len(self.logger['cql_alpha']) + 1e-7)
-        avg_log_prob = sum(self.logger['log_prob']) / (len(self.logger['log_prob']) + 1e-7)
+        log_prob = sum(self.logger['log_prob']) / (len(self.logger['log_prob']) + 1e-7)
         
         print('#'*50)
-        print(f"Total timesteps : {total_timesteps}")
-        print(f"Critic loss : {avg_critic_loss}")
-        print(f"Actor loss : {avg_actor_loss}")
-        print(f"Alpha loss : {avg_alpha_loss}")
-        print(f"CQL loss : {avg_cql_loss}")
-        print(f"Q target : {avg_q_target}")
-        print(f"Q1 : {avg_q1}")
-        print(f"Q2 : {avg_q2}")
-        print(f"Alpha : {alpha}")
-        print(f"CQL alpha : {cql_alpha}")
-        print(f"Log prob : {avg_log_prob}")
+        print(f"Total timesteps\t\t|\t{total_timesteps}")
+        print(f"actor loss\t\t|\t{actor_loss}")
+        print(f"critic loss\t\t|\t{critic_loss}")
+        print(f"q1_loss\t\t\t|\t{q1_loss}")
+        print(f"q2_loss\t\t\t|\t{q2_loss}")
+        print(f"cql_loss1\t\t|\t{cql_loss1}")
+        print(f"cql_loss2\t\t|\t{cql_loss2}")
+        print(f"alpha_loss\t\t|\t{alpha_loss}")
+        print(f"cql_alpha_loss\t\t|\t{cql_alpha_loss}")
+        print(f"q_target :\t\t|\t{q_target}")
+        print(f"q1\t\t\t|\t{q1}")
+        print(f"q2\t\t\t|\t{q2}")
+        print(f"q1_from_random\t\t|\t{q1_from_random}")
+        print(f"q2_from_random\t\t|\t{q2_from_random}")
+        print(f"q1_from_curr_actions\t|\t{q1_from_curr_actions}")
+        print(f"q2_from_curr_actions\t|\t{q2_from_curr_actions}")
+        print(f"q1_from_next_actions\t|\t{q1_from_next_actions}")
+        print(f"q2_from_next_actions\t|\t{q2_from_next_actions}")
+        print(f"logsumexp_q1\t\t|\t{logsumexp_q1}")
+        print(f"logsumexp_q2\t\t|\t{logsumexp_q2}")
+        print(f"q1_diff\t\t\t|\t{q1_diff}")
+        print(f"q2_diff\t\t\t|\t{q2_diff}")
+        print(f"alpha\t\t\t|\t{alpha}")
+        print(f"cql_alpha\t\t|\t{cql_alpha}")
+        print(f"log_prob\t\t|\t{log_prob}")
         print('#'*50)
         print('\n')
 
@@ -363,7 +421,7 @@ class CQL_sac:
                 episode_steps += 1
                 state = next_state
                     
-                if episode_steps >= self.args.max_episode_len:
+                if done or episode_steps >= self.args.max_episode_len:
                     break
 
             print('#'*50)

@@ -109,11 +109,7 @@ class SAC:
                     done = True
                     break
 
-            self.logger['total_timesteps'].append(total_timesteps)
-            self.logger['episode'].append(i_episode + 1)
-            self.logger['episode_reward'].append(episode_reward)
-
-            if i_episode % self.args.save_freq == 0:
+            if self.args.save and total_timesteps % self.args.save_freq == 0:
                 print("New model saved!!!!!!!!!!!!")
                 torch.save(self.critic1.state_dict(), f'./models/critic1_{self.args.env}.pt')
                 torch.save(self.critic2.state_dict(), f'./models/critic2_{self.args.env}.pt')
@@ -122,7 +118,10 @@ class SAC:
                 torch.save(self.actor.state_dict(), f'./models/actor_{self.args.env}.pt')
                 torch.save(self.alpha, f'./models/alpha_{self.args.env}.pt')
 
-            if i_episode % self.args.logging_freq == 0:
+            if total_timesteps % self.args.logging_freq == 0:
+                self.logger['total_timesteps'].append(total_timesteps)
+                self.logger['episode'].append(i_episode + 1)
+                self.logger['episode_reward'].append(episode_reward)
                 self.logging()
             
             if total_timesteps > self.args.timesteps:
@@ -279,7 +278,7 @@ class SAC:
                 'rewards' : [], 
                 'terminals' : []}
 
-        for i in range(10000):
+        for i in range(100):
             self.env.seed(random.randint(0, 1000))
             done = False
             state = self.env.reset()
@@ -311,10 +310,10 @@ class SAC:
                     traj['rewards'].append(reward)
                     traj['terminals'].append(0)
             
-            if i % 1000 == 0:
+            if i % 10 == 0:
                 print(f"Episode : {i}")
             
-        with open('traj.pkl', 'wb') as tf:
+        with open(f'{self.args.env}.pkl', 'wb') as tf:
             pickle.dump(traj, tf)
 
         

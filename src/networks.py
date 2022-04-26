@@ -8,7 +8,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 def weights_init(module):
     if isinstance(module, nn.Linear):
         nn.init.xavier_uniform_(module.weight, gain=1)
-        module.bias.data.fill_(0.01)
+        module.bias.data.fill_(0.0)
 
 
 class Actor_continuous(nn.Module):
@@ -31,7 +31,7 @@ class Actor_continuous(nn.Module):
         mean = self.mean_layer(out)
         log_std = self.log_std_layer(out)
         # std is going to near 0 -> log_prob -> NaN
-        log_std = torch.clamp(log_std, min=-20, max=5)
+        log_std = torch.clamp(log_std, min=-20, max=2)
         return mean, log_std
 
     def sample(self, obs):

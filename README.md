@@ -34,7 +34,8 @@ To train a CQL model for the environment, run:
 ```
 python main.py --env <env e.g. hopper-expert-v0> --save True --cql_scaling (5.0 or 10.0) --cql_tau (5.0 or 10.0)
 ```
-**Note** If you want to use your own dataset generated in the above manner, you can add `--dataset mine`
+**Note** If you want to use your own dataset generated in the above manner, you can add `--dataset mine`.
+
 For testing a trained CQL agent on the environment, run:
 ```
 python main.py --env <env e.g. hopper-expert-v0> --mode test

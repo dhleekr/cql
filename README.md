@@ -27,16 +27,28 @@ For generating dataset with trained SAC agent, run:
 ```
 python main.py --algo sac --env <env e.g. Pendulum-v1> -- mode generate
 ```
-**Note** You can skip dataset generating if you use d4rl datset.
+**Note!** You can skip dataset generating if you use d4rl datset.
 
 ### CQL
 To train a CQL model for the environment, run:
 ```
 python main.py --env <env e.g. hopper-expert-v0> --save True --cql_scaling (5.0 or 10.0) --cql_tau (5.0 or 10.0)
 ```
-**Note** If you want to use your own dataset generated in the above manner, you can add `--dataset mine`.
-
+If you want to use your own dataset generated in the above manner, you can add `--dataset mine`. 
+**Note!** You can try other valeus in `cql_scaling` and `cql_tau`. But, if you don't choose the value carefully, the `cql_loss` may become extremely large. 
 For testing a trained CQL agent on the environment, run:
 ```
 python main.py --env <env e.g. hopper-expert-v0> --mode test
 ```
+
+You can see the results by using `Tensorboard`
+```
+tensorboard --logidr ./results/<env>/
+```
+
+## Results
+Average Return graph
+![hopper](https://user-images.githubusercontent.com/48791681/165443768-07e513ed-b15f-476c-8150-795590ffd9a6.png)
+
+Trained Agent
+![hopper](https://user-images.githubusercontent.com/48791681/165444366-6ea6d36f-4591-4858-9d45-8c19318fcb26.gif)

@@ -1,4 +1,6 @@
-# cql_imql
+# CQL
+Implementation of [Conservative Q-Learning](https://arxiv.org/abs/2006.04779) and [Soft Actor-Critic](https://arxiv.org/abs/1812.05905) algorithm in PyTorch.
+
 ## Requirements
 - python 3.6+
 - mujoco

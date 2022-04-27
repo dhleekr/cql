@@ -57,7 +57,6 @@ tensorboard --logidr ./results/<env>/
 
 ### Trained Agent
 <p align="center">
-<img src="https://user-images.githubusercontent.com/48791681/165444366-6ea6d36f-4591-4858-9d45-8c19318fcb26.gif" width="600">
+<img src="https://user-images.githubusercontent.com/48791681/165444366-6ea6d36f-4591-4858-9d45-8c19318fcb26.gif" width="800">
 </p>
 </img>
-![hopper](https://user-images.githubusercontent.com/48791681/165444366-6ea6d36f-4591-4858-9d45-8c19318fcb26.gif)

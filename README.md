@@ -49,8 +49,8 @@ tensorboard --logidr ./results/<env>/
 ```
 
 ## Results
-Average Return graph
+### Average Return graph
 ![hopper](https://user-images.githubusercontent.com/48791681/165443768-07e513ed-b15f-476c-8150-795590ffd9a6.png)
 
-Trained Agent
+### Trained Agent
 ![hopper](https://user-images.githubusercontent.com/48791681/165444366-6ea6d36f-4591-4858-9d45-8c19318fcb26.gif)

@@ -10,7 +10,7 @@ First, install [D4RL benchmark](https://github.com/rail-berkeley/d4rl) repositor
 
 Create a virtual environment and install all required packages.
 ```
-cd cql_impl
+cd cql
 pip install -r requirements.txt
 pip install -e .
 ```
